@@ -1,0 +1,77 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn(){return request.auth != null;}
+    function admin(){return signedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid));}
+    function phaseOpen(){return get(/databases/$(database)/documents/config/main).data.phase == 'open';}
+    function validDecisions(d){
+      return d is map && d.keys().hasAll(['A','B','C','D','E','F','G']) &&
+      d.keys().hasOnly(['A','B','C','D','E','F','G']) &&
+      d.A in ['reject','hold','sell'] && d.B in ['reject','hold','sell'] &&
+      d.C in ['reject','hold','sell'] && d.D in ['reject','hold','sell'] &&
+      d.E in ['reject','hold','sell'] && d.F in ['reject','hold','sell'] &&
+      d.G in ['reject','hold','sell'] &&
+      ((d.A == 'reject' ? 0:250)+(d.B == 'reject'?0:150)+
+       (d.C == 'reject'?0:400)+(d.D == 'reject'?0:100)+
+       (d.E == 'reject'?0:100)+(d.F == 'reject'?0:50)+
+       (d.G == 'reject'?0:200)) <= 1000 &&
+      ((d.A == 'reject'?0:1)+(d.B == 'reject'?0:1)+
+       (d.C == 'reject'?0:1)+(d.D == 'reject'?0:1)+
+       (d.E == 'reject'?0:1)+(d.F == 'reject'?0:1)+
+       (d.G == 'reject'?0:1)) >= 3;
+    }
+    match /admins/{uid} {
+      allow get: if admin() && request.auth.uid==uid;
+      allow list, create, update, delete: if false; // add admin doc via Firebase Console
+    }
+    match /config/{id} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create, update, delete: if admin();
+    }
+    match /teamSecrets/{teamId} {
+      allow get, list, create, update, delete: if admin();
+    }
+    match /claims/{uid} {
+      allow get: if admin() || (signedIn() && request.auth.uid == uid);
+      allow list: if admin();
+      allow create: if signedIn() && request.auth.uid == uid &&
+        request.resource.data.keys().hasOnly(['groupId','pin']) &&
+        request.resource.data.keys().hasAll(['groupId','pin']) &&
+        request.resource.data.groupId in ['G1','G2','G3'] &&
+        request.resource.data.pin == get(/databases/$(database)/documents/teamSecrets/$(request.resource.data.groupId)).data.pin &&
+        getAfter(/databases/$(database)/documents/teams/$(request.resource.data.groupId)).data.ownerUid == uid;
+      allow update, delete: if admin();
+    }
+    match /teams/{teamId} {
+      allow get: if admin() || (signedIn() && (resource.data.ownerUid == null || resource.data.ownerUid == request.auth.uid));
+      allow list: if admin();
+      allow create, delete: if admin();
+      allow update: if admin() || (
+        signedIn() && phaseOpen() &&
+        (
+          // Atomic claim: both team owner and claim doc must be written together
+          (resource.data.ownerUid == null &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ownerUid']) &&
+            request.resource.data.ownerUid == request.auth.uid &&
+            getAfter(/databases/$(database)/documents/claims/$(request.auth.uid)).data.groupId == teamId)
+          ||
+          // Once a head submits, no further edits by students are allowed
+          (resource.data.ownerUid == request.auth.uid && resource.data.submitted == false &&
+            request.resource.data.diff(resource.data).affectedKeys().hasOnly(['decisions','submitted','submittedAt']) &&
+            request.resource.data.submitted == true &&
+            request.resource.data.submittedAt == request.time &&
+            validDecisions(request.resource.data.decisions))
+        )
+      );
+    }
+    match /outcomes/{id} {
+      allow get: if admin() || (signedIn() &&
+         get(/databases/$(database)/documents/config/main).data.phase in ['reveal','results'] &&
+         resource.data.order <= get(/databases/$(database)/documents/config/main).data.revealCount);
+      allow list: if admin();
+      allow create, update, delete: if admin();
+    }
+    match /{other=**} {allow read, write: if false;}
+  }
+}
