@@ -34,7 +34,15 @@ async function join(){
   const group=el('group').value; const pin=el('pin').value.trim().toUpperCase();
   if(!TEAM_IDS.includes(group)||!pin){alertMsg('Select a group and enter the group join code.');return;}
   el('joinBtn').disabled=true;
-  try{
+    try{
+    if(!auth.currentUser){
+      await signInAnonymously(auth);
+    }
+    if(!auth.currentUser.isAnonymous){
+      throw new Error('Use a private browser window for students.');
+    }
+    uid=auth.currentUser.uid;
+
     await runTransaction(db,async tx=>{
       const teamRef=doc(db,'teams',group),claimRef=doc(db,'claims',uid);
       const s=await tx.get(teamRef);
@@ -88,8 +96,10 @@ async function init(){
     const app=initializeApp(firebaseConfig);db=getFirestore(app);auth=getAuth(app);
     onAuthStateChanged(auth,async u=>{
       try{
-        if(!u){await signInAnonymously(auth);return;}
-        if(!u.isAnonymous){await signOut(auth);await signInAnonymously(auth);return;}
+        if(!u){show('join',true);return;}
+        if(!u.isAnonymous){
+          alertMsg('Instructor is signed in. Use a private window for students.');
+          return;}
         uid=u.uid;
         const claim=await getDoc(doc(db,'claims',uid));
         if(claim.exists())await subscribeGroup(claim.data().groupId);
